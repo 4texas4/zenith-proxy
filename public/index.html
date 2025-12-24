@@ -86,7 +86,13 @@
   </head>
 
   <body>
-    <!-- TOP URL BAR -->
+    <!-- TABS BAR (above URL bar) -->
+    <div id="tabsbar">
+      <button id="newTabBtn" title="New Tab">＋ New Tab</button>
+      <div id="tabsContainer" role="tablist"></div>
+    </div>
+
+    <!-- TOP URL BAR (moved below tabs) -->
     <div id="topbar">
       <form id="nav-form" autocomplete="off">
         <div id="nav-controls">
@@ -117,7 +123,7 @@
       </div>
 
       <p style="opacity: 0.7; margin-top: 10px">
-        Type a URL above to start browsing
+        A tab should automatically launch soon
       </p>
     </div>
 
