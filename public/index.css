@@ -18,10 +18,95 @@ body {
   overflow: hidden;
 }
 
-/* ===== TOP BAR ===== */
-#topbar {
+/* ===== TABS BAR (above topbar) ===== */
+#tabsbar {
   position: fixed;
   top: 0;
+  left: 0;
+  right: 0;
+  height: 36px;
+  background: #0b0b0b;
+  border-bottom: 1px solid #1f1f1f;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  box-sizing: border-box;
+  z-index: 1100;
+}
+
+#newTabBtn {
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 6px;
+  border: none;
+  background: #1f2937;
+  color: #fff;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+#tabsContainer {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 0 4px;
+  align-items: center;
+}
+
+/* individual tab */
+.tab {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 10px;
+  background: #121212;
+  border: 1px solid #222;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  min-width: 120px;
+  max-width: 300px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #ddd;
+  font-size: 13px;
+}
+
+.tab.active {
+  background: #0f1720;
+  color: #fff;
+  border-color: #2b6cb0;
+}
+
+.tab .tab-title {
+  display: inline-block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* close button */
+.tab .tab-close {
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  color: #cfcfcf;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.tab .tab-close:hover {
+  background: #ff4d4d;
+  color: #fff;
+}
+
+/* ===== TOP BAR (URL input) - shifted down under tabs ===== */
+#topbar {
+  position: fixed;
+  top: 36px; /* below tabsbar */
   left: 0;
   right: 0;
   height: 48px;
@@ -99,8 +184,8 @@ body {
 
 /* ===== HOME / LANDING ===== */
 #home {
-  margin-top: 48px;
-  height: calc(100vh - 48px);
+  margin-top: 84px; /* tabs 36 + topbar 48 */
+  height: calc(100vh - 84px);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -109,12 +194,25 @@ body {
 }
 
 /* ===== SCRAMJET FRAME ===== */
-#sj-frame {
+/* When frames are created they are positioned with top = 84px (see JS) */
+.sj-frame-common {
   position: fixed;
-  top: 48px;
+  top: 84px;
   left: 0;
   width: 100vw;
-  height: calc(100vh - 48px);
+  height: calc(100vh - 84px);
+  border: none;
+  background-color: #111;
+  z-index: 10;
+}
+
+/* fallback frame id selector (older CSS) */
+#sj-frame {
+  position: fixed;
+  top: 84px; /* leave space for tabs + URL bar */
+  left: 0;
+  width: 100vw;
+  height: calc(100vh - 84px);
   border: none;
   background-color: #111;
   z-index: 10;
@@ -147,57 +245,6 @@ body {
   font-family: "Courier New", Courier, monospace;
 }
 
-/* ===== LOGO / BRANDING ===== */
-.logo {
-  height: 25vh;
-}
-
-.logo-wrapper .text {
-  font-size: 75px;
-  color: #ffffff;
-}
-
-.logo-wrapper h1 {
-  color: #ffffff;
-}
-
-/* ===== FOOTER ===== */
-footer {
-  margin: 0 16px;
-  margin-top: auto;
-  display: flex;
-  flex-direction: column;
-  line-height: 30px;
-  margin-bottom: 20px;
-}
-
-footer > div {
-  display: flex;
-  justify-content: left;
-  align-items: center;
-  flex-wrap: wrap;
-  margin-bottom: 15px;
-}
-
-footer a,
-footer span {
-  margin: 0 15px;
-  text-decoration: none;
-  color: #cfcfcf;
-  font-size: 15px;
-}
-
-footer a:hover {
-  text-decoration: underline;
-  color: #ffffff;
-}
-
-/* ===== DESCRIPTION ===== */
-.desc p {
-  width: 560px;
-  color: rgba(255, 255, 255, 0.6);
-}
-
 /* ===== CREDIT BOX ===== */
 .credit {
   border-radius: 10px;
@@ -208,35 +255,4 @@ footer a:hover {
   flex-wrap: wrap;
   margin-bottom: 15px;
   background: #161616;
-}
-
-.credit label {
-  margin-left: auto;
-  margin-right: 15px;
-}
-
-.credit a,
-.credit label {
-  color: #ffffff;
-  text-decoration: underline;
-  text-align: right;
-}
-
-.credit pre {
-  display: none;
-  width: 100%;
-  color: #cccccc;
-}
-
-.credit label::after {
-  content: "show license";
-  cursor: pointer;
-}
-
-.credit input:checked + label::after {
-  content: "hide license";
-}
-
-.credit input:checked ~ pre {
-  display: block;
 }
