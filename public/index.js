@@ -7,6 +7,8 @@ const home = document.getElementById("home");
 const backBtn = document.getElementById("backBtn");
 const forwardBtn = document.getElementById("forwardBtn");
 const refreshBtn = document.getElementById("refreshBtn");
+const newTabBtn = document.getElementById("newTabBtn");
+const tabsContainer = document.getElementById("tabsContainer");
 
 const error = document.getElementById("sj-error");
 const errorCode = document.getElementById("sj-error-code");
@@ -27,32 +29,30 @@ scramjet.init();
 const connection = new BareMux.BareMuxConnection("/baremux/worker.js");
 
 /* ===== STATE ===== */
-let frame = null;
-let lastKnownLocation = "";
 let pollHandle = null;
+let lastKnownLocation = "";
 
-/* ===== HISTORY STATE (single-tab) ===== */
-let historyStack = [];
-let historyIndex = -1;
-let lastPushedUrl = null;
+/* ===== TABS ===== */
+let tabIdCounter = 0;
+let tabs = []; // each: { id, title, history: [], historyIndex, frame, tabEl }
+let activeTabId = null;
 
 /* ===== CONFIG ===== */
 const POLL_INTERVAL_MS = 1000; // adjust if needed
 const FALLBACK_SEARCH = "https://www.google.com/search?q=%s";
+const DEFAULT_NEW_TAB_URL = "https://google.com";
 
-/* ===== HELPERS ===== */
+/* ===== HELPERS (URL normalization / search) ===== */
 function ensureProtocol(u) {
   if (!u) return u;
   if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(u)) return u;
   return "https://" + u;
 }
-
 function isLikelyHost(input) {
   return (
     /\./.test(input) && !/\s/.test(input) && !/^\d+(\.\d+){1,}$/.test(input)
   );
 }
-
 function buildSearchUrl(q) {
   try {
     if (typeof search === "function") {
@@ -62,7 +62,6 @@ function buildSearchUrl(q) {
   } catch (e) {}
   return FALLBACK_SEARCH.replace("%s", encodeURIComponent(q));
 }
-
 function normalizeInputToUrl(input) {
   input = (input || "").trim();
   if (!input) return "";
@@ -71,10 +70,9 @@ function normalizeInputToUrl(input) {
   return buildSearchUrl(input);
 }
 
-/* ===== NEW: unwrap proxied URL into original target URL ===== */
+/* ===== UNWRAP proxied URL into original target URL (keeps UI readable) ===== */
 function unwrapProxiedUrl(maybeProxied) {
   if (!maybeProxied || typeof maybeProxied !== "string") return maybeProxied;
-
   try {
     const parsed = new URL(maybeProxied);
     if (/^https?:$/.test(parsed.protocol)) {
@@ -127,7 +125,6 @@ function unwrapProxiedUrl(maybeProxied) {
       } catch (e) {}
     }
   } catch (e) {}
-
   return maybeProxied;
 }
 
@@ -142,138 +139,17 @@ function findAndDecodeEncodedUrl(str) {
   return null;
 }
 
-/* ===== NAV INPUT SET / HISTORY PUSH ===== */
-function trySetNavInputIfDifferent(url) {
-  if (!url) return;
-  let cleaned = unwrapProxiedUrl(url);
-
-  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(cleaned)) {
-    cleaned = ensureProtocol(cleaned);
-  }
-
-  if (cleaned !== lastKnownLocation) {
-    lastKnownLocation = cleaned;
-    try {
-      navInput.value = cleaned;
-    } catch (e) {}
-    // frame navigation observed (link click / in-iframe nav) — maybe push it
-    maybePushFromFrame(cleaned);
-  }
-}
-
-/* ===== FRAME NAV UPDATE STRATEGIES ===== */
-function attachFrameNavigationHandlers(f) {
-  if (typeof f.onNavigate === "function") {
-    try {
-      f.onNavigate((newUrl) => {
-        trySetNavInputIfDifferent(newUrl);
-      });
-    } catch (e) {}
-  }
-
-  if (typeof f.on === "function") {
-    try {
-      f.on("navigate", (newUrl) => trySetNavInputIfDifferent(newUrl));
-    } catch (e) {}
-  }
-
-  try {
-    f.frame.addEventListener("load", () => {
-      try {
-        const cw = f.frame.contentWindow;
-        if (cw && cw.location && cw.location.href) {
-          trySetNavInputIfDifferent(cw.location.href);
-          return;
-        }
-      } catch (e) {
-        // cross-origin — ignore
-      }
-      try {
-        if (f.frame.src) trySetNavInputIfDifferent(f.frame.src);
-      } catch (e) {}
-    });
-  } catch (e) {}
-
-  if (pollHandle) clearInterval(pollHandle);
-  pollHandle = setInterval(() => {
-    if (!f || !f.frame) return;
-    try {
-      const cw = f.frame.contentWindow;
-      if (cw && cw.location && cw.location.href) {
-        trySetNavInputIfDifferent(cw.location.href);
-        return;
-      }
-    } catch (e) {
-      // cross-origin — ignore
-    }
-    try {
-      if (f.frame.src) trySetNavInputIfDifferent(f.frame.src);
-    } catch (e) {}
-  }, POLL_INTERVAL_MS);
-}
-
-/* ===== HISTORY HELPERS ===== */
-function updateNavButtons() {
-  backBtn.disabled = historyIndex <= 0;
-  forwardBtn.disabled = historyIndex >= historyStack.length - 1;
-}
-
-function pushHistory(url, replace = false) {
-  if (!url) return;
-  // normalize display form (unwrap proxied so history is readable)
-  const normalized = unwrapProxiedUrl(url);
-  // If replace requested, overwrite current entry
-  if (replace && historyIndex >= 0) {
-    historyStack[historyIndex] = normalized;
-    lastPushedUrl = normalized;
-    updateNavButtons();
-    return;
-  }
-
-  // drop any "forward" history
-  historyStack = historyStack.slice(0, historyIndex + 1);
-
-  // avoid pushing duplicate consecutive entries
-  if (historyIndex >= 0 && historyStack[historyIndex] === normalized) {
-    lastPushedUrl = normalized;
-    updateNavButtons();
-    return;
-  }
-
-  historyStack.push(normalized);
-  historyIndex = historyStack.length - 1;
-  lastPushedUrl = normalized;
-  updateNavButtons();
-}
-
-function maybePushFromFrame(cleanedUrl) {
-  // cleanedUrl is already unwrapped and normalized by trySetNavInputIfDifferent
-  if (!cleanedUrl) return;
-  if (historyIndex >= 0 && historyStack[historyIndex] === cleanedUrl) return;
-  // If lastPushedUrl equals cleanedUrl, skip duplicate
-  if (lastPushedUrl && lastPushedUrl === cleanedUrl) return;
-  pushHistory(cleanedUrl);
-}
-
-/* ===== NAVIGATION (goTo) ===== */
-async function goTo(input) {
-  error.textContent = "";
-  errorCode.textContent = "";
-
-  const target = normalizeInputToUrl(input);
-  if (!target) return;
-
+/* ===== TRANSPORT / SW helper ===== */
+async function ensureTransportAndSW() {
+  // registerSW() may already be available in global scope (register-sw.js)
   try {
     await registerSW();
   } catch (err) {
-    error.textContent = "Failed to register service worker.";
-    errorCode.textContent = err.toString();
-    return;
+    console.warn("registerSW failed:", err);
+    // continue; some hosts may not need it
   }
 
-  const url = target;
-
-  let wispUrl =
+  const wispUrl =
     (location.protocol === "https:" ? "wss" : "ws") +
     "://" +
     location.host +
@@ -284,127 +160,458 @@ async function goTo(input) {
       await connection.setTransport("/epoxy/index.mjs", [{ wisp: wispUrl }]);
     }
   } catch (err) {
-    error.textContent = "Failed to establish proxy transport.";
-    errorCode.textContent = err.toString();
+    console.warn("setTransport failed:", err);
+  }
+}
+
+/* ===== TAB UI helpers ===== */
+function createTabElement(tab) {
+  const tabEl = document.createElement("div");
+  tabEl.className = "tab";
+  tabEl.dataset.tabId = tab.id;
+  tabEl.innerHTML = `
+    <span class="tab-title">${escapeHtml(tab.title || "New Tab")}</span>
+    <button class="tab-close" title="Close">×</button>
+  `;
+
+  tabEl.addEventListener("click", (e) => {
+    if (e.target.classList.contains("tab-close")) return;
+    switchToTab(tab.id);
+  });
+
+  tabEl.querySelector(".tab-close").addEventListener("click", (e) => {
+    e.stopPropagation();
+    closeTab(tab.id);
+  });
+
+  return tabEl;
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+/* ===== TABS: create / switch / close / load ===== */
+async function createTab(url = DEFAULT_NEW_TAB_URL, switchTo = true) {
+  await ensureTransportAndSW();
+
+  const id = ++tabIdCounter;
+  const tab = {
+    id,
+    title: "New Tab",
+    history: [],
+    historyIndex: -1,
+    frame: null,
+    tabEl: null,
+  };
+  tabs.push(tab);
+
+  // create UI element
+  const tabEl = createTabElement(tab);
+  tabsContainer.appendChild(tabEl);
+  tab.tabEl = tabEl;
+
+  // create frame
+  try {
+    const f = scramjet.createFrame();
+    f.frame.id = `sj-frame-${id}`;
+    f.frame.style.display = "none"; // hidden until switched to
+    f.frame.style.position = "fixed";
+    f.frame.style.top = getFrameTop() + "px"; // 84px: tabs + URL bar
+    f.frame.style.left = "0";
+    f.frame.style.width = "100vw";
+    f.frame.style.height = `calc(100vh - ${getFrameTop()}px)`;
+    f.frame.style.border = "none";
+    f.frame.style.backgroundColor = "#111";
+    f.frame.style.zIndex = "10";
+    document.body.appendChild(f.frame);
+    tab.frame = f;
+
+    attachFrameNavigationHandlersForTab(f, tab.id);
+
+    // load initial URL (push into tab history)
+    await loadUrlInTab(tab, url, true);
+  } catch (e) {
+    // fallback: create plain iframe if scramjet frame fails
+    const iframe = document.createElement("iframe");
+    iframe.id = `sj-frame-${id}`;
+    iframe.style.display = "none";
+    iframe.style.position = "fixed";
+    iframe.style.top = getFrameTop() + "px";
+    iframe.style.left = "0";
+    iframe.style.width = "100vw";
+    iframe.style.height = `calc(100vh - ${getFrameTop()}px)`;
+    iframe.style.border = "none";
+    document.body.appendChild(iframe);
+    tab.frame = { frame: iframe, go: (u) => (iframe.src = u) };
+    attachFrameNavigationHandlersForTab(tab.frame, tab.id);
+    await loadUrlInTab(tab, url, true);
+  }
+
+  if (switchTo) switchToTab(id);
+  return tab;
+}
+
+function getFrameTop() {
+  // tabsbar height 36 + topbar height 48 => top = 84
+  // Keep consistent with CSS
+  return 84;
+}
+
+function switchToTab(tabId) {
+  const tab = tabs.find((t) => t.id === tabId);
+  if (!tab) return;
+
+  // hide all frames & remove active class from tabs
+  tabs.forEach((t) => {
+    try {
+      if (t.frame && t.frame.frame) t.frame.frame.style.display = "none";
+    } catch (e) {}
+    if (t.tabEl) t.tabEl.classList.remove("active");
+  });
+
+  // show chosen
+  try {
+    tab.frame.frame.style.display = "";
+  } catch (e) {}
+  if (tab.tabEl) tab.tabEl.classList.add("active");
+  activeTabId = tabId;
+
+  // update nav input and nav buttons
+  if (tab.historyIndex >= 0) {
+    navInput.value = tab.history[tab.historyIndex];
+    lastKnownLocation = tab.history[tab.historyIndex];
+  } else {
+    navInput.value = "";
+    lastKnownLocation = "";
+  }
+  updateNavButtonsForActiveTab();
+}
+
+async function closeTab(tabId) {
+  const idx = tabs.findIndex((t) => t.id === tabId);
+  if (idx === -1) return;
+
+  const tab = tabs[idx];
+
+  // remove frame element
+  try {
+    if (tab.frame && tab.frame.frame) tab.frame.frame.remove();
+  } catch (e) {}
+
+  // remove tab element
+  try {
+    if (tab.tabEl) tab.tabEl.remove();
+  } catch (e) {}
+
+  tabs.splice(idx, 1);
+
+  // if closed active, switch to neighbor or create new
+  if (activeTabId === tabId) {
+    if (tabs.length > 0) {
+      const next = tabs[Math.max(0, idx - 1)];
+      switchToTab(next.id);
+    } else {
+      // create a fresh tab
+      createTab(DEFAULT_NEW_TAB_URL, true);
+    }
+  }
+}
+
+/* ===== NAV / HISTORY functions per-tab ===== */
+function updateNavButtonsForActiveTab() {
+  const tab = tabs.find((t) => t.id === activeTabId);
+  if (!tab) {
+    backBtn.disabled = true;
+    forwardBtn.disabled = true;
+    return;
+  }
+  backBtn.disabled = !(tab.historyIndex > 0);
+  forwardBtn.disabled = !(tab.historyIndex < tab.history.length - 1);
+}
+
+function pushHistoryForTab(tab, rawUrl, replace = false) {
+  if (!tab || !rawUrl) return;
+  const normalized = unwrapProxiedUrl(rawUrl);
+  const final = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(normalized)
+    ? normalized
+    : ensureProtocol(normalized);
+
+  if (replace && tab.historyIndex >= 0) {
+    tab.history[tab.historyIndex] = final;
+    updateNavButtonsForActiveTab();
     return;
   }
 
-  if (!frame) {
-    frame = scramjet.createFrame();
-    frame.frame.id = "sj-frame";
-    document.body.appendChild(frame.frame);
+  tab.history = tab.history.slice(0, tab.historyIndex + 1);
 
-    attachFrameNavigationHandlers(frame);
+  if (tab.historyIndex >= 0 && tab.history[tab.historyIndex] === final) {
+    // duplicate
+    updateNavButtonsForActiveTab();
+    return;
   }
 
-  if (home) {
-    home.style.display = "none";
+  tab.history.push(final);
+  tab.historyIndex = tab.history.length - 1;
+  updateNavButtonsForActiveTab();
+}
+
+async function loadUrlInTab(tab, url, push = true) {
+  if (!tab) return;
+  if (!tab.frame) {
+    // create frame if somehow missing
+    await createTab(url, false);
+    return;
   }
 
-  // show the URL immediately in the input
-  trySetNavInputIfDifferent(url);
+  tab.title = "Loading...";
+  if (tab.tabEl)
+    tab.tabEl.querySelector(".tab-title").textContent = "Loading...";
 
+  // use frame.go if available
   try {
-    // Use frame.go where available; this triggers frame.onNavigate handlers
-    frame.go(url);
-    // push immediate history entry so back/forward works immediately
-    // store the unwrapped form in history
-    pushHistory(url);
-  } catch (err) {
+    if (typeof tab.frame.go === "function") {
+      tab.frame.go(url);
+    } else if (tab.frame.frame) {
+      tab.frame.frame.src = url;
+    }
+  } catch (e) {
     try {
-      frame.frame.src = url;
-      pushHistory(url);
+      if (tab.frame.frame) tab.frame.frame.src = url;
+    } catch (err) {}
+  }
+
+  if (push) pushHistoryForTab(tab, url);
+}
+
+/* ===== ATTACH FRAME NAV HANDLERS (per tab) ===== */
+function attachFrameNavigationHandlersForTab(f, tabId) {
+  const tab = () => tabs.find((t) => t.id === tabId);
+  // when scramjet provides onNavigate
+  if (typeof f.onNavigate === "function") {
+    try {
+      f.onNavigate((newUrl) => {
+        handleFrameNavigation(tabId, newUrl);
+      });
     } catch (e) {}
-    error.textContent = "Navigation failed.";
-    errorCode.textContent = err.toString();
+  }
+  // if scramjet uses event emitter
+  if (typeof f.on === "function") {
+    try {
+      f.on("navigate", (newUrl) => handleFrameNavigation(tabId, newUrl));
+    } catch (e) {}
+  }
+
+  // load event
+  try {
+    f.frame.addEventListener("load", () => {
+      try {
+        const cw = f.frame.contentWindow;
+        // try same-origin title
+        try {
+          if (cw && cw.document && cw.document.title) {
+            setTabTitle(tabId, cw.document.title);
+          }
+        } catch (e) {}
+        // try location href
+        try {
+          if (cw && cw.location && cw.location.href) {
+            handleFrameNavigation(tabId, cw.location.href);
+            return;
+          }
+        } catch (e) {}
+      } catch (e) {}
+      // fallback to src
+      try {
+        if (f.frame.src) handleFrameNavigation(tabId, f.frame.src);
+      } catch (e) {}
+    });
+  } catch (e) {}
+
+  // polling fallback for cross-origin pages and SPA navigations
+  if (pollHandle) clearInterval(pollHandle);
+  pollHandle = setInterval(() => {
+    const currentTab = tabs.find((t) => t.id === tabId);
+    if (!currentTab || !currentTab.frame || !currentTab.frame.frame) return;
+    try {
+      const cw = currentTab.frame.frame.contentWindow;
+      if (cw && cw.location && cw.location.href) {
+        handleFrameNavigation(tabId, cw.location.href);
+        // try to set title if same-origin
+        try {
+          if (cw.document && cw.document.title)
+            setTabTitle(tabId, cw.document.title);
+        } catch (e) {}
+        return;
+      }
+    } catch (e) {}
+    try {
+      if (currentTab.frame.frame.src)
+        handleFrameNavigation(tabId, currentTab.frame.frame.src);
+    } catch (e) {}
+  }, POLL_INTERVAL_MS);
+}
+
+/* ===== FRAME NAV HANDLER (updates UI + history + title) ===== */
+function handleFrameNavigation(tabId, rawUrl) {
+  const tab = tabs.find((t) => t.id === tabId);
+  if (!tab) return;
+  const unwrapped = unwrapProxiedUrl(rawUrl);
+  // update input if this is active tab
+  if (activeTabId === tabId) {
+    if (document.activeElement !== navInput) {
+      if (navInput.value !== unwrapped) navInput.value = unwrapped;
+      lastKnownLocation = unwrapped;
+    }
+  }
+
+  // push to this tab history (avoid duplicates)
+  if (tab.history[tab.historyIndex] !== unwrapped)
+    pushHistoryForTab(tab, unwrapped);
+  // also set a nicer title if nothing else
+  trySetTabTitleFromUrl(tabId, unwrapped);
+}
+
+/* ===== TAB TITLE helpers ===== */
+function setTabTitle(tabId, title) {
+  const t = tabs.find((x) => x.id === tabId);
+  if (!t) return;
+  t.title = title || t.title || "";
+  if (t.tabEl)
+    t.tabEl.querySelector(".tab-title").textContent = title || t.title;
+}
+
+function trySetTabTitleFromUrl(tabId, url) {
+  if (!url) return;
+  try {
+    const u = new URL(url);
+    const hostname = u.hostname.replace(/^www\./, "");
+    if (
+      !tabs.find((x) => x.id === tabId).title ||
+      tabs.find((x) => x.id === tabId).title === "Loading..."
+    ) {
+      setTabTitle(tabId, hostname);
+    }
+  } catch (e) {
+    // fallback: show raw
+    setTabTitle(tabId, url);
   }
 }
 
-/* ===== BACK / FORWARD / REFRESH ===== */
-function goBack() {
-  if (historyIndex <= 0) return;
-  historyIndex--;
-  const u = historyStack[historyIndex];
-  updateNavButtons();
-  if (!frame) return;
+/* ===== NAV / UI actions (Back/Forward/Refresh) ===== */
+function goBackActiveTab() {
+  const tab = tabs.find((t) => t.id === activeTabId);
+  if (!tab) return;
+  if (tab.historyIndex <= 0) return;
+  tab.historyIndex--;
+  const u = tab.history[tab.historyIndex];
+  updateNavButtonsForActiveTab();
   try {
-    frame.go(u);
+    if (typeof tab.frame.go === "function") tab.frame.go(u);
+    else tab.frame.frame.src = u;
   } catch (e) {
     try {
-      frame.frame.src = u;
-    } catch (err) {}
+      tab.frame.frame.src = u;
+    } catch (er) {}
   }
-  // update last known location/ui
-  lastKnownLocation = u;
   navInput.value = u;
+  lastKnownLocation = u;
 }
 
-function goForward() {
-  if (historyIndex >= historyStack.length - 1) return;
-  historyIndex++;
-  const u = historyStack[historyIndex];
-  updateNavButtons();
-  if (!frame) return;
+function goForwardActiveTab() {
+  const tab = tabs.find((t) => t.id === activeTabId);
+  if (!tab) return;
+  if (tab.historyIndex >= tab.history.length - 1) return;
+  tab.historyIndex++;
+  const u = tab.history[tab.historyIndex];
+  updateNavButtonsForActiveTab();
   try {
-    frame.go(u);
+    if (typeof tab.frame.go === "function") tab.frame.go(u);
+    else tab.frame.frame.src = u;
   } catch (e) {
     try {
-      frame.frame.src = u;
-    } catch (err) {}
+      tab.frame.frame.src = u;
+    } catch (er) {}
   }
-  lastKnownLocation = u;
   navInput.value = u;
+  lastKnownLocation = u;
 }
 
-function refreshCurrent() {
-  if (!frame || historyIndex < 0) return;
-  const u = historyStack[historyIndex];
+function refreshActiveTab() {
+  const tab = tabs.find((t) => t.id === activeTabId);
+  if (!tab || tab.historyIndex < 0) return;
+  const u = tab.history[tab.historyIndex];
   try {
-    frame.go(u);
+    if (typeof tab.frame.go === "function") tab.frame.go(u);
+    else tab.frame.frame.src = u;
   } catch (e) {
     try {
-      // forcing src = same url to reload
-      frame.frame.src = u;
-    } catch (err) {}
+      tab.frame.frame.src = u;
+    } catch (er) {}
   }
-  // Keep input showing current URL
-  lastKnownLocation = u;
   navInput.value = u;
+  lastKnownLocation = u;
 }
 
 /* ===== EVENTS ===== */
 navForm.addEventListener("submit", (e) => {
   e.preventDefault();
-  goTo(navInput.value);
+  // if no tabs, create one first
+  if (!activeTabId) {
+    createTab(navInput.value || DEFAULT_NEW_TAB_URL, true);
+    return;
+  }
+  const url = normalizeInputToUrl(navInput.value);
+  const tab = tabs.find((t) => t.id === activeTabId);
+  if (!tab) {
+    createTab(url, true);
+    return;
+  }
+  loadUrlInTab(tab, url, true);
 });
 
 backBtn.addEventListener("click", (e) => {
   e.preventDefault();
-  goBack();
+  goBackActiveTab();
 });
 forwardBtn.addEventListener("click", (e) => {
   e.preventDefault();
-  goForward();
+  goForwardActiveTab();
 });
 refreshBtn.addEventListener("click", (e) => {
   e.preventDefault();
-  refreshCurrent();
+  refreshActiveTab();
+});
+newTabBtn.addEventListener("click", (e) => {
+  e.preventDefault();
+  createTab(DEFAULT_NEW_TAB_URL, true);
 });
 
-/* ===== EXTRA: keyboard shortcuts ===== */
+/* keyboard shortcuts */
 document.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "l") {
     e.preventDefault();
     navInput.focus();
     navInput.select();
   }
-  // Alt+Left / Alt+Right as back/forward
   if (e.altKey && !e.shiftKey && e.key === "ArrowLeft") {
     e.preventDefault();
-    goBack();
+    goBackActiveTab();
   }
   if (e.altKey && !e.shiftKey && e.key === "ArrowRight") {
     e.preventDefault();
-    goForward();
+    goForwardActiveTab();
   }
 });
+
+/* ===== BOOT: start with one tab (google) ===== */
+(async function boot() {
+  await ensureTransportAndSW();
+  // create first tab and open google
+  const t = await createTab(DEFAULT_NEW_TAB_URL, true);
+  // make sure UI buttons reflect initial state
+  updateNavButtonsForActiveTab();
+})();
