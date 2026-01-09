@@ -42,6 +42,33 @@ const POLL_INTERVAL_MS = 1000; // adjust if needed
 const FALLBACK_SEARCH = "https://www.google.com/search?q=%s";
 const DEFAULT_NEW_TAB_URL = "https://4texas4.github.io/tools/search.html";
 
+/* ===== DIRECT MODE: parse ?https://example.com (no key) ===== */
+function getDirectUrlFromQuery() {
+  const s = window.location.search || "";
+  if (!s || s === "?") return null;
+
+  // raw after '?'
+  let raw = s.substring(1);
+
+  // If there's a single '=' but raw does NOT already start with http(s), interpret as key=value and take the value.
+  // This keeps backward compatibility with ?URL=... while prioritizing the "no key" format.
+  if (!/^https?:\/\//i.test(raw)) {
+    const eqIndex = raw.indexOf("=");
+    if (eqIndex !== -1 && !/^https?:\/\//i.test(raw.substring(eqIndex + 1))) {
+      raw = raw.substring(eqIndex + 1);
+    }
+  }
+
+  try {
+    raw = decodeURIComponent(raw);
+  } catch (e) {}
+  raw = (raw || "").trim();
+  return raw ? raw : null;
+}
+
+const DIRECT_URL = getDirectUrlFromQuery();
+const IS_DIRECT_MODE = !!DIRECT_URL;
+
 /* ===== HELPERS (URL normalization / search) ===== */
 function ensureProtocol(u) {
   if (!u) return u;
@@ -164,8 +191,35 @@ async function ensureTransportAndSW() {
   }
 }
 
+/* ===== DIRECT MODE UI adjustments ===== */
+function applyDirectModeUI() {
+  if (!IS_DIRECT_MODE) return;
+
+  // Hide nav + tabs + buttons + errors
+  try {
+    if (navForm) navForm.style.display = "none";
+    if (tabsContainer) tabsContainer.style.display = "none";
+    if (backBtn) backBtn.style.display = "none";
+    if (forwardBtn) forwardBtn.style.display = "none";
+    if (refreshBtn) refreshBtn.style.display = "none";
+    if (newTabBtn) newTabBtn.style.display = "none";
+    if (error) error.style.display = "none";
+    if (errorCode) errorCode.style.display = "none";
+  } catch (e) {}
+
+  // Make body occupy full viewport and remove scrollbars
+  document.documentElement.style.height = "100%";
+  document.body.style.height = "100%";
+  document.documentElement.style.margin = "0";
+  document.body.style.margin = "0";
+  document.body.style.overflow = "hidden";
+}
+
 /* ===== TAB UI helpers ===== */
 function createTabElement(tab) {
+  // In direct mode we skip creating visible tab UI entirely
+  if (IS_DIRECT_MODE) return null;
+
   const tabEl = document.createElement("div");
   tabEl.className = "tab";
   tabEl.dataset.tabId = tab.id;
@@ -209,24 +263,28 @@ async function createTab(url = DEFAULT_NEW_TAB_URL, switchTo = true) {
   };
   tabs.push(tab);
 
-  // create UI element
+  // create UI element (skipped in direct mode)
   const tabEl = createTabElement(tab);
-  tabsContainer.appendChild(tabEl);
+  if (tabEl && tabsContainer) tabsContainer.appendChild(tabEl);
   tab.tabEl = tabEl;
 
   // create frame
   try {
     const f = scramjet.createFrame();
     f.frame.id = `sj-frame-${id}`;
+
+    // in direct mode, make the frame fully fill the viewport; otherwise keep default top offset
     f.frame.style.display = "none"; // hidden until switched to
     f.frame.style.position = "fixed";
-    f.frame.style.top = getFrameTop() + "px"; // 84px: tabs + URL bar
+    f.frame.style.top = getFrameTop() + "px";
     f.frame.style.left = "0";
     f.frame.style.width = "100vw";
-    f.frame.style.height = `calc(100vh - ${getFrameTop()}px)`;
+    f.frame.style.height = IS_DIRECT_MODE
+      ? `100vh`
+      : `calc(100vh - ${getFrameTop()}px)`;
     f.frame.style.border = "none";
     f.frame.style.backgroundColor = "#111";
-    f.frame.style.zIndex = "10";
+    f.frame.style.zIndex = "9999"; // ensure it sits on top in direct mode
     document.body.appendChild(f.frame);
     tab.frame = f;
 
@@ -243,7 +301,9 @@ async function createTab(url = DEFAULT_NEW_TAB_URL, switchTo = true) {
     iframe.style.top = getFrameTop() + "px";
     iframe.style.left = "0";
     iframe.style.width = "100vw";
-    iframe.style.height = `calc(100vh - ${getFrameTop()}px)`;
+    iframe.style.height = IS_DIRECT_MODE
+      ? `100vh`
+      : `calc(100vh - ${getFrameTop()}px)`;
     iframe.style.border = "none";
     document.body.appendChild(iframe);
     tab.frame = { frame: iframe, go: (u) => (iframe.src = u) };
@@ -257,8 +317,8 @@ async function createTab(url = DEFAULT_NEW_TAB_URL, switchTo = true) {
 
 function getFrameTop() {
   // tabsbar height 36 + topbar height 48 => top = 84
-  // Keep consistent with CSS
-  return 84;
+  // In direct mode we want full-screen frames (no offset)
+  return IS_DIRECT_MODE ? 0 : 84;
 }
 
 function switchToTab(tabId) {
@@ -282,10 +342,10 @@ function switchToTab(tabId) {
 
   // update nav input and nav buttons
   if (tab.historyIndex >= 0) {
-    navInput.value = tab.history[tab.historyIndex];
+    if (navInput) navInput.value = tab.history[tab.historyIndex];
     lastKnownLocation = tab.history[tab.historyIndex];
   } else {
-    navInput.value = "";
+    if (navInput) navInput.value = "";
     lastKnownLocation = "";
   }
   updateNavButtonsForActiveTab();
@@ -325,12 +385,13 @@ async function closeTab(tabId) {
 function updateNavButtonsForActiveTab() {
   const tab = tabs.find((t) => t.id === activeTabId);
   if (!tab) {
-    backBtn.disabled = true;
-    forwardBtn.disabled = true;
+    if (backBtn) backBtn.disabled = true;
+    if (forwardBtn) forwardBtn.disabled = true;
     return;
   }
-  backBtn.disabled = !(tab.historyIndex > 0);
-  forwardBtn.disabled = !(tab.historyIndex < tab.history.length - 1);
+  if (backBtn) backBtn.disabled = !(tab.historyIndex > 0);
+  if (forwardBtn)
+    forwardBtn.disabled = !(tab.historyIndex < tab.history.length - 1);
 }
 
 function pushHistoryForTab(tab, rawUrl, replace = false) {
@@ -463,7 +524,7 @@ function handleFrameNavigation(tabId, rawUrl) {
   // update input if this is active tab
   if (activeTabId === tabId) {
     if (document.activeElement !== navInput) {
-      if (navInput.value !== unwrapped) navInput.value = unwrapped;
+      if (navInput && navInput.value !== unwrapped) navInput.value = unwrapped;
       lastKnownLocation = unwrapped;
     }
   }
@@ -517,7 +578,7 @@ function goBackActiveTab() {
       tab.frame.frame.src = u;
     } catch (er) {}
   }
-  navInput.value = u;
+  if (navInput) navInput.value = u;
   lastKnownLocation = u;
 }
 
@@ -536,7 +597,7 @@ function goForwardActiveTab() {
       tab.frame.frame.src = u;
     } catch (er) {}
   }
-  navInput.value = u;
+  if (navInput) navInput.value = u;
   lastKnownLocation = u;
 }
 
@@ -552,50 +613,61 @@ function refreshActiveTab() {
       tab.frame.frame.src = u;
     } catch (er) {}
   }
-  navInput.value = u;
+  if (navInput) navInput.value = u;
   lastKnownLocation = u;
 }
 
 /* ===== EVENTS ===== */
-navForm.addEventListener("submit", (e) => {
-  e.preventDefault();
-  // if no tabs, create one first
-  if (!activeTabId) {
-    createTab(navInput.value || DEFAULT_NEW_TAB_URL, true);
-    return;
-  }
-  const url = normalizeInputToUrl(navInput.value);
-  const tab = tabs.find((t) => t.id === activeTabId);
-  if (!tab) {
-    createTab(url, true);
-    return;
-  }
-  loadUrlInTab(tab, url, true);
-});
+if (navForm) {
+  navForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    // if no tabs, create one first
+    if (!activeTabId) {
+      createTab(navInput.value || DEFAULT_NEW_TAB_URL, true);
+      return;
+    }
+    const url = normalizeInputToUrl(navInput.value);
+    const tab = tabs.find((t) => t.id === activeTabId);
+    if (!tab) {
+      createTab(url, true);
+      return;
+    }
+    loadUrlInTab(tab, url, true);
+  });
+}
 
-backBtn.addEventListener("click", (e) => {
-  e.preventDefault();
-  goBackActiveTab();
-});
-forwardBtn.addEventListener("click", (e) => {
-  e.preventDefault();
-  goForwardActiveTab();
-});
-refreshBtn.addEventListener("click", (e) => {
-  e.preventDefault();
-  refreshActiveTab();
-});
-newTabBtn.addEventListener("click", (e) => {
-  e.preventDefault();
-  createTab(DEFAULT_NEW_TAB_URL, true);
-});
+if (backBtn)
+  backBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    goBackActiveTab();
+  });
+if (forwardBtn)
+  forwardBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    goForwardActiveTab();
+  });
+if (refreshBtn)
+  refreshBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    refreshActiveTab();
+  });
+if (newTabBtn)
+  newTabBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    createTab(DEFAULT_NEW_TAB_URL, true);
+  });
 
 /* keyboard shortcuts */
 document.addEventListener("keydown", (e) => {
+  // If direct mode, disable keyboard nav to avoid showing UI unintentionally
+  if (IS_DIRECT_MODE) return;
+
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "l") {
     e.preventDefault();
-    navInput.focus();
-    navInput.select();
+    if (navInput) {
+      navInput.focus();
+      navInput.select();
+    }
   }
   if (e.altKey && !e.shiftKey && e.key === "ArrowLeft") {
     e.preventDefault();
@@ -607,11 +679,26 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-/* ===== BOOT: start with one tab (google) ===== */
+/* ===== BOOT: start with one tab (google) or direct mode ===== */
 (async function boot() {
   await ensureTransportAndSW();
-  // create first tab and open google
+
+  if (IS_DIRECT_MODE) {
+    applyDirectModeUI();
+
+    const url = normalizeInputToUrl(DIRECT_URL || DEFAULT_NEW_TAB_URL);
+
+    // create exactly one frame/tab and load the URL (no visible tab UI)
+    await createTab(url, true);
+
+    // ensure nav buttons hidden and nav input not visible
+    updateNavButtonsForActiveTab();
+    if (navInput) navInput.style.display = "none";
+    if (tabsContainer) tabsContainer.style.display = "none";
+    return;
+  }
+
+  // Normal UI boot
   const t = await createTab(DEFAULT_NEW_TAB_URL, true);
-  // make sure UI buttons reflect initial state
   updateNavButtonsForActiveTab();
 })();
